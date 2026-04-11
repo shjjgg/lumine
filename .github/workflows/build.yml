@@ -46,21 +46,17 @@ jobs:
           Write-Host "Building version: $VERSION"
       
       - name: Build Windows EXE
-        shell: pwsh
+        env:
+          VERSION: ${{ steps.get_version.outputs.VERSION }}
+        shell: cmd
         run: |
-          $VERSION = "${{ steps.get_version.outputs.VERSION }}"
-          $BUILD_TIME = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+          mkdir dist 2>nul
+          set CGO_ENABLED=0
+          set GOOS=windows
+          set GOARCH=amd64
           
-          New-Item -ItemType Directory -Force -Path "dist"
-          
-          $env:CGO_ENABLED = "0"
-          $env:GOOS = "windows"
-          $env:GOARCH = "amd64"
-          
-          # 直接内联 ldflags，避免 PowerShell 变量解析问题
-          go build -trimpath -ldflags "-s -w -X main.version=$VERSION -X main.buildTime=$BUILD_TIME" -o "dist/lumine.exe" .
-          
-          Write-Host "64-bit build complete"
+          go build -trimpath -ldflags "-s -w -X main.version=%VERSION%" -o dist\lumine.exe .
+          echo Build complete
       
       - name: Copy config files
         shell: pwsh
