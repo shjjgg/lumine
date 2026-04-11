@@ -1,0 +1,86 @@
+# .github/workflows/build.yml
+name: Build Windows EXE
+
+on:
+  # 每次推送到 main 分支时触发
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  
+  # 手动触发
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (例如: 1.0.0)'
+        required: false
+        default: ''
+
+  # 每周自动构建
+  schedule:
+    - cron: '0 0 * * 0'
+
+jobs:
+  build:
+    name: Build Windows Executable
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          check-latest: true
+      
+      - name: Get version
+        id: get_version
+        shell: pwsh
+        run: |
+          if ("${{ github.event.inputs.version }}") {
+            $VERSION = "${{ github.event.inputs.version }}"
+          } elseif ("${{ github.ref_name }}" -match '^v') {
+            $VERSION = "${{ github.ref_name }}".Substring(1)
+          } else {
+            $VERSION = "dev-${{ github.sha }}".Substring(0, 7)
+          }
+          echo "VERSION=$VERSION" >> $env:GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+      
+      - name: Build Windows EXE
+        shell: pwsh
+        run: |
+          $VERSION = "${{ steps.get_version.outputs.VERSION }}"
+          
+          # 构建 Windows amd64 版本
+          $env:CGO_ENABLED = "0"
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          
+          go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o lumine-windows-amd64.exe .
+          
+          # 构建 Windows 386 版本
+          $env:GOARCH = "386"
+          go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o lumine-windows-386.exe .
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumine-windows-exe
+          path: |
+            lumine-windows-amd64.exe
+            lumine-windows-386.exe
+      
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            lumine-windows-amd64.exe
+            lumine-windows-386.exe
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
