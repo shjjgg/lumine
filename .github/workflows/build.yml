@@ -2,7 +2,6 @@
 name: Build Windows EXE
 
 on:
-  # 推送到 main/master 分支时触发
   push:
     branches: [main, master]
     tags: ['v*']
@@ -10,7 +9,6 @@ on:
       - '**.md'
       - '.gitignore'
   
-  # 手动触发
   workflow_dispatch:
     inputs:
       version:
@@ -53,32 +51,26 @@ jobs:
           $VERSION = "${{ steps.get_version.outputs.VERSION }}"
           $BUILD_TIME = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
           
-          # 创建输出目录
           New-Item -ItemType Directory -Force -Path "dist"
           
-          # 编译参数
-          $LDFLAGS = "-s -w -X main.version=$VERSION -X main.buildTime=$BUILD_TIME"
-          
-          # 编译 64 位版本
           $env:CGO_ENABLED = "0"
           $env:GOOS = "windows"
           $env:GOARCH = "amd64"
-          go build -trimpath -ldflags $LDFLAGS -o "dist/lumine.exe" .
+          
+          # 直接内联 ldflags，避免 PowerShell 变量解析问题
+          go build -trimpath -ldflags "-s -w -X main.version=$VERSION -X main.buildTime=$BUILD_TIME" -o "dist/lumine.exe" .
           
           Write-Host "64-bit build complete"
       
       - name: Copy config files
         shell: pwsh
         run: |
-          # 复制配置文件到 dist 目录
           Copy-Item "config.json" "dist/config.json" -ErrorAction SilentlyContinue
           Copy-Item "config_pool.json" "dist/config_pool.json" -ErrorAction SilentlyContinue
           Copy-Item "NOTICE" "dist/NOTICE" -ErrorAction SilentlyContinue
           Copy-Item "README.md" "dist/README.md" -ErrorAction SilentlyContinue
           Copy-Item "README_zh.md" "dist/README_zh.md" -ErrorAction SilentlyContinue
           
-          # 列出打包内容
-          Write-Host "Package contents:"
           Get-ChildItem "dist"
       
       - name: Create ZIP package
@@ -88,9 +80,7 @@ jobs:
           $ZIP_NAME = "lumine-$VERSION-windows-amd64.zip"
           
           Compress-Archive -Path "dist/*" -DestinationPath $ZIP_NAME -Force
-          
           Write-Host "Created: $ZIP_NAME"
-          Get-Item $ZIP_NAME
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -103,8 +93,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: Release ${{ steps.get_version.outputs.VERSION }}
-          files: |
-            lumine-*.zip
+          files: lumine-*.zip
           draft: false
           prerelease: false
           generate_release_notes: true
