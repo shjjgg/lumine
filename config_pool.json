@@ -2,6 +2,14 @@
   "log_level": "INFO",
   "socks5_address": "127.0.0.1:1080",
   "http_address": "127.0.0.1:1225",
+  "outbound_local_addr": {
+    "enabled": true,
+    "bind_ip": "auto",
+    "bind_zone": "",
+    "detect_network": "udp",
+    "detect_target": "8.8.8.8:53",
+    "dial_timeout": "5s"
+  },
   "dns_addr": "https://987.cloudflare-gateway.com/dns-query",
   "socks5_for_doh": "",
   "udp_minsize": 4096,
@@ -92,7 +100,7 @@
     "platform.twitter.com": "146.75.120.157",
     "(cn|purr|et).nytimes.com": "",
     "*nyt(imes|).com": "199.232.137.164",
-    "*netlify.app": "^$netlify.app"
+    "*netlify.app": "^$netlify"
   },
   "default_policy": {
     "reply_first": false,
@@ -105,6 +113,7 @@
     "mod_minor_ver": true,
     "num_records": 4,
     "num_segs": 1,
+    "wait_for_ack": true,
     "send_interval": "200ms",
     "oob": false,
     "oob_ex": false,

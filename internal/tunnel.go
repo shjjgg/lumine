@@ -46,7 +46,7 @@ func handleTunnel(
 
 	if p.Mode == ModeRaw {
 		if dstConn == nil {
-			dstConn, err = net.DialTimeout("tcp", target, p.ConnectTimeout)
+			dstConn, err = dialTCPTimeout(target, p.ConnectTimeout)
 			if err != nil {
 				logger.Error("Connection to", oldTarget, "failed:", err)
 				return
@@ -149,7 +149,7 @@ func handleHTTP(
 
 	if p.HttpStatus == 0 || p.HttpStatus == -1 {
 		if dstConn == nil {
-			dstConn, err = net.DialTimeout("tcp", target, p.ConnectTimeout)
+			dstConn, err = dialTCPTimeout(target, p.ConnectTimeout)
 			if err != nil {
 				logger.Error("Connection to", oldTarget, "failed:", err)
 				resp := &http.Response{
@@ -201,14 +201,11 @@ func handleTLS(logger *log.Logger, recordLen int,
 	p *Policy, originHost, oldTarget, target, originPort string,
 	br *bufio.Reader, cliConn, dstConn net.Conn) (newConn net.Conn, ok bool) {
 	record := make([]byte, recordLen)
-	if n, err := br.Read(record); err != nil {
+	if _, err := io.ReadFull(br, record); err != nil {
 		logger.Error("Read first record:", err)
 		return
-	} else if n < int(recordLen) {
-		logger.Error(joinString("Read only ", n, " of ", recordLen, " bytes"))
-		return
 	}
-	prtVer, sniPos, sniLen, hasKeyShare, hasECH, err := parseClientHello(record)
+	prtVer, sniStart, sniLen, hasKeyShare, hasECH, err := parseClientHello(record)
 	if err != nil {
 		logger.Error("Parse record:", err)
 		return
@@ -217,15 +214,15 @@ func handleTLS(logger *log.Logger, recordLen int,
 		sendTLSAlert(logger, cliConn, prtVer, tlsAlertAccessDenied, tlsAlertLevelFatal)
 		return
 	}
-	if p.TLS13Only == BoolTrue && !hasKeyShare {
+	if p.TLS13Only.IsTrue() && !hasKeyShare {
 		logger.Info("Connection blocked: key_share missing from ClientHello")
 		sendTLSAlert(logger, cliConn, prtVer, tlsAlertProtocolVersion, tlsAlertLevelFatal)
 		return
 	}
-	if sniPos <= 0 || sniLen <= 0 {
+	if sniStart <= 0 || sniLen <= 0 {
 		logger.Info("SNI not found")
 		if dstConn == nil {
-			dstConn, err = net.DialTimeout("tcp", target, p.ConnectTimeout)
+			dstConn, err = dialTCPTimeout(target, p.ConnectTimeout)
 			if err != nil {
 				logger.Error("Connection to", oldTarget, "failed:", err)
 				return
@@ -237,7 +234,7 @@ func handleTLS(logger *log.Logger, recordLen int,
 		}
 		logger.Info("Sent ClientHello directly")
 	} else {
-		sniStr := string(record[sniPos : sniPos+sniLen])
+		sniStr := string(record[sniStart : sniStart+sniLen])
 		if originHost != sniStr {
 			logger.Info("Mismatched SNI:", sniStr)
 			switch p.SniffOverrideMode {
@@ -268,7 +265,7 @@ func handleTLS(logger *log.Logger, recordLen int,
 						originPort = formatInt(sniPolicy.Port)
 					}
 					newTarget := net.JoinHostPort(newDst, originPort)
-					newConn, err := net.DialTimeout("tcp", newTarget, sniPolicy.ConnectTimeout)
+					newConn, err := dialTCPTimeout(newTarget, sniPolicy.ConnectTimeout)
 					if err == nil {
 						if dstConn != nil {
 							dstConn.Close()
@@ -285,7 +282,7 @@ func handleTLS(logger *log.Logger, recordLen int,
 		}
 
 		if dstConn == nil {
-			dstConn, err = net.DialTimeout("tcp", target, p.ConnectTimeout)
+			dstConn, err = dialTCPTimeout(target, p.ConnectTimeout)
 			if err != nil {
 				logger.Error("Connection to", oldTarget, "failed:", err)
 				return
@@ -299,10 +296,10 @@ func handleTLS(logger *log.Logger, recordLen int,
 			}
 			logger.Info("Sent ClientHello directly")
 		case ModeTLSRF:
-			err = sendRecords(dstConn, record, sniPos, sniLen,
+			err = sendRecords(dstConn, record, sniStart, sniLen,
 				p.NumRecords, p.NumSegments,
-				p.OOB == BoolTrue, p.OOBEx == BoolTrue,
-				p.ModMinorVer == BoolTrue, p.SendInterval)
+				p.OOB.IsTrue(), p.OOBEx.IsTrue(),
+				p.ModMinorVer.IsTrue(), p.WaitForAck.IsTrue(), p.SendInterval)
 			if err != nil {
 				logger.Error("TLS fragment:", err)
 				return
@@ -317,7 +314,7 @@ func handleTLS(logger *log.Logger, recordLen int,
 			}
 			if err = desyncSend(
 				dstConn, ipv6, record,
-				sniPos, sniLen, ttl, p.FakeSleep,
+				sniStart, sniLen, ttl, p.FakeSleep,
 			); err != nil {
 				logger.Error("TTL desync:", err)
 				return

@@ -10,7 +10,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/moi-si/addrtrie"
 	log "github.com/moi-si/mylog"
+)
+
+var (
+	domainMatcher *addrtrie.DomainMatcher[*Policy]
+	ipMatcher     *addrtrie.IPv4Trie[*Policy]
+	ipv6Matcher   *addrtrie.IPv6Trie[*Policy]
+	hostsMatcher  *addrtrie.DomainMatcher[string]
 )
 
 const (
@@ -100,15 +108,23 @@ func (m Mode) String() string {
 	return "unknown"
 }
 
-type BoolWithDefault uint8
+type TriBool uint8
 
 const (
-	BoolUnset BoolWithDefault = iota
+	BoolUnset TriBool = iota
 	BoolFalse
 	BoolTrue
 )
 
-func (b *BoolWithDefault) UnmarshalJSON(data []byte) error {
+func (b TriBool) IsTrue() bool {
+	return b == BoolTrue
+}
+
+func (b TriBool) IsUnset() bool {
+	return b.IsUnset()
+}
+
+func (b *TriBool) UnmarshalJSON(data []byte) error {
 	s := string(data)
 	switch s {
 	case "null":
@@ -124,7 +140,7 @@ func (b *BoolWithDefault) UnmarshalJSON(data []byte) error {
 }
 
 type Policy struct {
-	ReplyFirst        BoolWithDefault
+	ReplyFirst        TriBool
 	SniffOverrideMode SniffOverrideMode
 	DNSMode           DNSMode
 	ConnectTimeout    time.Duration
@@ -132,14 +148,15 @@ type Policy struct {
 	MapTo             string
 	Port              int
 	HttpStatus        int
-	TLS13Only         BoolWithDefault
+	TLS13Only         TriBool
 	Mode              Mode
 
 	NumRecords   int
 	NumSegments  int
-	OOB          BoolWithDefault
-	OOBEx        BoolWithDefault
-	ModMinorVer  BoolWithDefault
+	WaitForAck   TriBool
+	OOB          TriBool
+	OOBEx        TriBool
+	ModMinorVer  TriBool
 	SendInterval time.Duration
 
 	FakeTTL       int
@@ -152,20 +169,21 @@ type Policy struct {
 func (p *Policy) UnmarshalJSON(data []byte) error {
 	var tmp struct {
 		SniffOverrideMode SniffOverrideMode `json:"sniff_override"`
-		ReplyFirst        BoolWithDefault   `json:"reply_first"`
+		ReplyFirst        TriBool           `json:"reply_first"`
 		ConnectTimeout    *string           `json:"connect_timeout"`
 		Host              *string           `json:"host"`
 		MapTo             *string           `json:"map_to"`
 		Port              *int              `json:"port"`
 		DNSMode           DNSMode           `json:"dns_mode"`
 		HttpStatus        *int              `json:"http_status"`
-		TLS13Only         BoolWithDefault   `json:"tls13_only"`
+		TLS13Only         TriBool           `json:"tls13_only"`
 		Mode              Mode              `json:"mode"`
 		NumRecords        *int              `json:"num_records"`
 		NumSegments       *int              `json:"num_segs"`
-		OOB               BoolWithDefault   `json:"oob"`
-		OOBEx             BoolWithDefault   `json:"oob_ex"`
-		ModMinorVer       BoolWithDefault   `json:"mod_minor_ver"`
+		WaitForAck        TriBool           `json:"wait_for_ack"`
+		OOB               TriBool           `json:"oob"`
+		OOBEx             TriBool           `json:"oob_ex"`
+		ModMinorVer       TriBool           `json:"mod_minor_ver"`
 		SendInterval      *string           `json:"send_interval"`
 		FakeTTL           *int              `json:"fake_ttl"`
 		FakeSleep         *string           `json:"fake_sleep"`
@@ -185,6 +203,7 @@ func (p *Policy) UnmarshalJSON(data []byte) error {
 	p.OOB = tmp.OOB
 	p.OOBEx = tmp.OOBEx
 	p.ModMinorVer = tmp.ModMinorVer
+	p.WaitForAck = tmp.WaitForAck
 
 	if tmp.Host == nil {
 		p.Host = unsetString
@@ -322,13 +341,13 @@ func (p Policy) String() string {
 	if p.HttpStatus > 0 {
 		fields = append(fields, "http_status="+formatInt(p.HttpStatus))
 	}
-	if p.TLS13Only == BoolTrue {
+	if p.TLS13Only.IsTrue() {
 		fields = append(fields, "tls13_only")
 	}
 	fields = append(fields, p.Mode.String())
 	switch p.Mode {
 	case ModeTLSRF:
-		if p.ModMinorVer == BoolTrue {
+		if p.ModMinorVer.IsTrue() {
 			fields = append(fields, "mod_minor_ver")
 		}
 		if p.NumRecords != unsetInt && p.NumRecords != 1 {
@@ -340,12 +359,13 @@ func (p Policy) String() string {
 		if p.SendInterval > 0 {
 			fields = append(fields, "send_interval="+p.SendInterval.String())
 		}
-		if p.OOB == BoolTrue {
+		if p.OOB.IsTrue() {
 			fields = append(fields, "oob")
 		}
-		if p.OOBEx == BoolTrue {
+		if p.OOBEx.IsTrue() {
 			fields = append(fields, "oob_ex")
 		}
+
 	case ModeTTLD:
 		if p.FakeTTL == 0 || p.FakeTTL == unsetInt {
 			fields = append(fields, "auto_fake_ttl")
@@ -370,6 +390,7 @@ func mergePolicies(policies ...*Policy) *Policy {
 	merged := Policy{
 		Host:           unsetString,
 		MapTo:          unsetString,
+		Port:           unsetInt,
 		HttpStatus:     unsetInt,
 		SendInterval:   unsetInt,
 		FakeTTL:        unsetInt,
@@ -380,7 +401,7 @@ func mergePolicies(policies ...*Policy) *Policy {
 		if merged.SniffOverrideMode == SniffOverrideUnset && p.SniffOverrideMode != SniffOverrideUnset {
 			merged.SniffOverrideMode = p.SniffOverrideMode
 		}
-		if merged.ReplyFirst == BoolUnset && p.ReplyFirst != BoolUnset {
+		if merged.ReplyFirst.IsUnset() && !p.ReplyFirst.IsUnset() {
 			merged.ReplyFirst = p.ReplyFirst
 		}
 		if merged.ConnectTimeout == unsetInt && p.ConnectTimeout != unsetInt {
@@ -392,13 +413,13 @@ func mergePolicies(policies ...*Policy) *Policy {
 		if merged.MapTo == unsetString && p.MapTo != unsetString {
 			merged.MapTo = p.MapTo
 		}
-		if merged.Port == 0 && p.Port != 0 {
+		if merged.Port == unsetInt && p.Port != unsetInt {
 			merged.Port = p.Port
 		}
 		if merged.HttpStatus == unsetInt && p.HttpStatus != unsetInt {
 			merged.HttpStatus = p.HttpStatus
 		}
-		if merged.TLS13Only == BoolUnset && p.TLS13Only != BoolUnset {
+		if merged.TLS13Only.IsUnset() && !p.TLS13Only.IsUnset() {
 			merged.TLS13Only = p.TLS13Only
 		}
 		if merged.Mode == ModeUnknown && p.Mode != ModeUnknown {
@@ -413,13 +434,16 @@ func mergePolicies(policies ...*Policy) *Policy {
 		if merged.NumSegments == 0 && p.NumSegments != 0 {
 			merged.NumSegments = p.NumSegments
 		}
-		if merged.OOB == BoolUnset && p.OOB != BoolUnset {
+		if merged.WaitForAck.IsUnset() && !p.WaitForAck.IsUnset() {
+			merged.WaitForAck = p.WaitForAck
+		}
+		if merged.OOB.IsUnset() && !p.OOB.IsUnset() {
 			merged.OOB = p.OOB
 		}
-		if merged.OOBEx == BoolUnset && p.OOBEx != BoolUnset {
+		if merged.OOBEx.IsUnset() && !p.OOBEx.IsUnset() {
 			merged.OOBEx = p.OOBEx
 		}
-		if merged.ModMinorVer == BoolUnset && p.ModMinorVer != BoolUnset {
+		if merged.ModMinorVer.IsUnset() && !p.ModMinorVer.IsUnset() {
 			merged.ModMinorVer = p.ModMinorVer
 		}
 		if merged.SendInterval == unsetInt && p.SendInterval != unsetInt {
@@ -455,6 +479,66 @@ const (
 	ipPoolTagPrefix  = "$"
 	resolvePrefix    = "?"
 )
+
+func getIPPolicy(ip string) (*Policy, bool) {
+	if isIPv6(ip) {
+		return ipv6Matcher.Find(ip)
+	}
+	return ipMatcher.Find(ip)
+}
+
+var dohConnPolicy *Policy
+
+type policyConn struct {
+	net.Conn
+	handled bool
+}
+
+func (c *policyConn) Write(b []byte) (n int, err error) {
+	if c.handled {
+		return c.Conn.Write(b)
+	}
+	c.handled = true
+	var sniStart, sniLen int
+	var hasKeyShare bool
+	_, sniStart, sniLen, hasKeyShare, _, err = parseClientHello(b)
+	if err != nil {
+		return
+	}
+	if dohConnPolicy.TLS13Only.IsTrue() && !hasKeyShare {
+		return 0, errors.New("not a TLS 1.3 ClientHello")
+	}
+	if sniStart == -1 {
+		return c.Conn.Write(b)
+	}
+	switch dohConnPolicy.Mode {
+	case ModeDirect, ModeRaw:
+		return c.Conn.Write(b)
+	case ModeTTLD:
+		raddr := c.RemoteAddr().String()
+		ipv6 := raddr[0] == '['
+		ttl, err := getFakeTTL(nil, dohConnPolicy, raddr, ipv6)
+		if err != nil {
+			return 0, wrap("get fake TTL", err)
+		}
+		if err = desyncSend(
+			c.Conn, ipv6, b,
+			sniStart, sniLen, ttl, dohConnPolicy.FakeSleep,
+		); err != nil {
+			return 0, wrap("ttl desync", err)
+		}
+	case ModeTLSRF:
+		if err = sendRecords(c.Conn, b, sniStart, sniLen,
+			dohConnPolicy.NumRecords, dohConnPolicy.NumSegments,
+			dohConnPolicy.OOB.IsTrue(), dohConnPolicy.OOBEx.IsTrue(),
+			dohConnPolicy.ModMinorVer.IsTrue(), dohConnPolicy.WaitForAck.IsTrue(),
+			dohConnPolicy.SendInterval); err != nil {
+			return 0, wrap("tls fragment", err)
+		}
+	}
+	n = len(b)
+	return
+}
 
 func genDoHDialFunc() (func(ctx context.Context, network, address string) (net.Conn, error), error) {
 	parsedURL, err := url.Parse(dnsAddr)
@@ -522,11 +606,12 @@ func genDoHDialFunc() (func(ctx context.Context, network, address string) (net.C
 		port = formatInt(dohConnPolicy.Port)
 	}
 	addr := net.JoinHostPort(host, port)
-	dialer := net.Dialer{Timeout: dohConnPolicy.ConnectTimeout}
 	return func(ctx context.Context, network, _ string) (net.Conn, error) {
-		conn, err := dialer.DialContext(ctx, network, addr)
+		timeoutCtx, cancel := context.WithTimeout(ctx, dohConnPolicy.ConnectTimeout)
+		defer cancel()
+		conn, err := globalDialer.DialContext(timeoutCtx, network, addr)
 		if err == nil {
-			return &interceptConn{Conn: conn}, nil
+			return &policyConn{Conn: conn}, nil
 		}
 		return nil, err
 	}, nil
@@ -535,10 +620,7 @@ func genDoHDialFunc() (func(ctx context.Context, network, address string) (net.C
 func genPolicy(logger *log.Logger, originHost string, isIP, returnWhenDomainNotFound bool) (dstHost string, p *Policy, failed, blocked, domainNotFound bool) {
 	var err error
 
-	if !isIP {
-		isIP = net.ParseIP(originHost) != nil
-	}
-
+	isIP = isIP || net.ParseIP(originHost) != nil
 	if isIP {
 		var ipPolicy *Policy
 		dstHost, ipPolicy, err = ipRedirect(logger, originHost)

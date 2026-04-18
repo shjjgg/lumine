@@ -52,7 +52,7 @@ func SOCKS5Accept(addr *string, serverAddr string, done chan struct{}) {
 		} else {
 			connID += 1
 			if connID > 0xFFFFF {
-				connID = 0
+				connID = 1
 			}
 			go socks5Handler(conn, connID)
 		}
@@ -202,8 +202,8 @@ func socks5Handler(cliConn net.Conn, id uint32) {
 	}
 	target := net.JoinHostPort(dstHost, formatUint(dstPort))
 
-	if !(policy.ReplyFirst == BoolTrue) {
-		dstConn, err = net.DialTimeout("tcp", target, policy.ConnectTimeout)
+	if policy.ReplyFirst != BoolTrue {
+		dstConn, err = dialTCPTimeout(target, policy.ConnectTimeout)
 		if err != nil {
 			logger.Error("Connection to", oldTarget, "failed:", err)
 			sendReply(logger, cliConn, socks5ReplyServerFailure)
